@@ -50,6 +50,8 @@ For other systems the special implementation of NTP daemon control should be dev
   - timedatectl (simply it can be writen in Bash).
 
 
-# LICENSE:
+## LICENSE:
 
-  GNU GENERAL PUBLIC LICENSE Version 2, June 1991
+  [GNU General Public License Version 2, June 1991](https://www.gnu.org/licenses/old-licenses/gpl-2.0.en.html)
+
+Enjoy.
