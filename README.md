@@ -5,28 +5,28 @@ Timedate Daemon
 Requirements:
 ------------
 
-   glib-2.0             >= 2.58
-   gobject-2.0          >= 2.58
-   gio-2.0              >= 2.58
-   polkit-gobject-1     >= 123
-   libpcre2-8           >= 10.36
-   dbus                 >= 1.13.18
+   glib-2.0          >=  2.58
+   gobject-2.0       >=  2.58
+   gio-2.0           >=  2.58
+   polkit-gobject-1  >=  123
+   libpcre2-8        >=  10.36
+   dbus              >=  1.13.18
 
-TimeDate Daemon is a system service that can be used to control
-the system time and related settings.
+TimeDate Daemon is a system service that can be used to control the system time
+and related settings.
 
-This is replacement of systemd service that control the org.freedesktop.timedate1
-D-Bus interface for GNU Linux distributions which has not have a systemd.
+This is the replacement of systemd service that control the org.freedesktop.timedate1
+D-Bus interface for GNU Linux distributions which does not have a systemd.
 
 You can find specification at:
   https://www.freedesktop.org/software/systemd/man/latest/org.freedesktop.timedate1.html
 
 TimeDate Daemon does not support interactive parameter which can be used to control
-whether polkit should interactively ask the user for authentication credentials if required.
-Instead of interactive way users permissions can be set by Polkit rules in the
+whether PolKit should interactively ask the user for authentication credentials if required.
+Instead of interactive way users permissions can be set by PolKit rules in the
 /usr/share/polkit-1/rules.d/org.freedesktop.timedate1.rules file. For example,
-system administrator can add Desktop-users into 'wheel group to give him coresponded
-permissions.
+a system administrator can add Desktop-users into 'wheel' group to give them rights
+to access the org.freedesktop.timedate1 D-Bus interface.
 
 
 How to Build:
