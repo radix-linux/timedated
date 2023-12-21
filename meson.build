@@ -40,7 +40,7 @@ cdata.set_quoted('ADJTIME_CONF', get_option('adjtime_conf'))
 cdata.set_quoted('NTPD_CONF', get_option('ntpd_conf'))
 cdata.set_quoted('NTPD_RC', get_option('ntpd_rc'))
 
-glib_min_version    = '2.58'
+glib_min_version    = '2.76'
 polkit_min_version  = '123'
 pcre_min_version    = '10.36'
 
