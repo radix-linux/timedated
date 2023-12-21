@@ -10,11 +10,11 @@ This is the replacement of *systemd* service that control the **org.freedesktop.
 You can find specification at: [**Freedesktop.org**](https://www.freedesktop.org/software/systemd/man/latest/org.freedesktop.timedate1.html)
 
 **TimeDate** Daemon does not support interactive parameter which can be used to control
-whether PolKit should interactively ask the user for authentication credentials if required.
-Instead of interactive way users permissions can be set by PolKit rules in the
+whether *PolKit* should interactively ask the user for authentication credentials if required.
+Instead of interactive way users permissions can be set by *PolKit* rules in the
 */usr/share/polkit-1/rules.d/org.freedesktop.timedate1.rules* file. For example,
 a system administrator can add Desktop-users into **wheel** group to give them rights
-to access the org.freedesktop.timedate1 D-Bus interface.
+to access the **org.freedesktop.timedate1** *D-Bus interface*.
 
 ## Requirements:
 
@@ -46,12 +46,10 @@ For other systems the special implementation of NTP daemon control should be dev
 
 ## TODO:
 
-
-  - timedatectl (simply it can be writen in Bash).
+  - *timedatectl* (simply it can be writen in Bash).
 
 
 ## LICENSE:
 
-  [GNU General Public License Version 2, June 1991](https://www.gnu.org/licenses/old-licenses/gpl-2.0.en.html)
+[GNU General Public License Version 2, June 1991](https://www.gnu.org/licenses/old-licenses/gpl-2.0.en.html)
 
-Enjoy.
