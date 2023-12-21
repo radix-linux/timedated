@@ -7,7 +7,7 @@ and related settings.
 This is the replacement of *systemd* service that control the **org.freedesktop.timedate1**
 *D-Bus interface* for GNU Linux distributions which does not have a *systemd*.
 
-You can find specification at: [freedesktop.org](https://www.freedesktop.org/software/systemd/man/latest/org.freedesktop.timedate1.html)
+You can find specification at: [**Freedesktop.org**](https://www.freedesktop.org/software/systemd/man/latest/org.freedesktop.timedate1.html)
 
 **TimeDate** Daemon does not support interactive parameter which can be used to control
 whether PolKit should interactively ask the user for authentication credentials if required.
