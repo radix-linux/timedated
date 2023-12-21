@@ -1,0 +1,11 @@
+#
+# List of source files containing translatable strings.
+# Please keep this file sorted alphabetically:
+#
+
+# timedated source files:
+src/rcl-main.c
+src/rcl-ntpd-utils.c
+src/rcl-time-utils.c
+src/rcl-timedate.c
+src/rcl-zone-utils.c

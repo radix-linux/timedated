@@ -1,0 +1,26 @@
+
+option('privileged-group',
+       type : 'string',
+       value: 'wheel',
+       description : 'The name of the group whose members have administrator privileges')
+
+option('hwclock_conf',
+       type : 'string',
+       value: '/etc/hardwareclock',
+       description : 'Hardware clock time config file')
+
+option('adjtime_conf',
+       type : 'string',
+       value: '/etc/adjtime',
+       description : 'Adjtimex config file')
+
+option('ntpd_conf',
+       type : 'string',
+       value: '/etc/ntp.conf',
+       description : 'NTP daemon config file')
+
+option('ntpd_rc',
+       type : 'string',
+       value: '/etc/rc.d/rc.ntpd',
+       description : 'NTP daemon start/stop script')
+
