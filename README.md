@@ -1,25 +1,13 @@
 
 # [Timedate Daemon](https://cgit.radix.pro/radix/timedated.git/)
 
-## Requirements:
-
-```
-   glib-2.0          >=  2.76.0
-   gobject-2.0       >=  2.76.0
-   gio-2.0           >=  2.76.0
-   polkit-gobject-1  >=  123
-   libpcre2-8        >=  10.36
-   dbus              >=  1.13.18
-```
-
 **TimeDate** Daemon is a system service that can be used to control the system time
 and related settings.
 
-This is the replacement of systemd service that control the **org.freedesktop.timedate1**
-D-Bus interface for GNU Linux distributions which does not have a systemd.
+This is the replacement of *systemd* service that control the **org.freedesktop.timedate1**
+D-Bus interface for GNU Linux distributions which does not have a *systemd*.
 
-You can find specification at:
-  https://www.freedesktop.org/software/systemd/man/latest/org.freedesktop.timedate1.html
+You can find specification at: [freedesktop.org](https://www.freedesktop.org/software/systemd/man/latest/org.freedesktop.timedate1.html)
 
 **TimeDate** Daemon does not support interactive parameter which can be used to control
 whether PolKit should interactively ask the user for authentication credentials if required.
@@ -28,6 +16,16 @@ Instead of interactive way users permissions can be set by PolKit rules in the
 a system administrator can add Desktop-users into **wheel** group to give them rights
 to access the org.freedesktop.timedate1 D-Bus interface.
 
+## Requirements:
+
+ | Package          |     | version |
+ | :---             | :-: | :---    |
+ | glib-2.0         | >=  | 2.76.0  |
+ | gobject-2.0      | >=  | 2.76.0  |
+ | gio-2.0          | >=  | 2.76.0  |
+ | polkit-gobject-1 | >=  | 123     |
+ | libpcre2-8       | >=  | 10.36   |
+ | dbus             | >=  | 1.13.18 |
 
 ## How to Build:
 
