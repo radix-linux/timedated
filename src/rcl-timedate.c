@@ -21,6 +21,7 @@
 #include "config.h"
 
 #include <string.h>
+#include <inttypes.h>
 #include <stdlib.h>
 
 #include <glib.h>
@@ -635,7 +636,7 @@ gboolean handle_set_time( RclTimedateDaemon     *object,
   rcl_timedate_daemon_set_time_usec( object, timespec_load( &ts ) );
 
 out:
-  g_debug( "set-time: SetTime to %ld returns successful status(relative=%s; interactive=%s)",
+  g_debug( "set-time: SetTime to %" PRIu64 " returns successful status(relative=%s; interactive=%s)",
                                  usec_utc,
                                  (relative)    ? "true" : "false",
                                  (interactive) ? "true" : "false" );
