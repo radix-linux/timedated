@@ -2,16 +2,6 @@
 Timedate Daemon
 ===============
 
-Requirements:
-------------
-
-   glib-2.0          >=  2.58
-   gobject-2.0       >=  2.58
-   gio-2.0           >=  2.58
-   polkit-gobject-1  >=  123
-   libpcre2-8        >=  10.36
-   dbus              >=  1.13.18
-
 TimeDate Daemon is a system service that can be used to control the system time
 and related settings.
 
@@ -29,6 +19,16 @@ a system administrator can add Desktop-users into 'wheel' group to give them rig
 to access the org.freedesktop.timedate1 D-Bus interface.
 
 
+Requirements:
+------------
+
+   glib-2.0          >=  2.76
+   gobject-2.0       >=  2.76
+   gio-2.0           >=  2.76
+   polkit-gobject-1  >=  123
+   libpcre2-8        >=  10.36
+   dbus              >=  1.13.18
+
 How to Build:
 ============
 
@@ -41,8 +41,7 @@ Supported Distributions:
 =======================
 
  - Radix cross Linux [https://radix.pro]
- - Slackware         [http://www.slackware.com]
-   (needed litle changes in timeconfig script)
+ - Slackware         [http://www.slackware.com] (needed litle changes in timeconfig script)
 
 For other systems the special implementation of NTP daemon control should be developed.
 
@@ -55,4 +54,4 @@ TODO:
 
 LICENSE:
 =======
-  GNU GENERAL PUBLIC LICENSE Version 2, June 1991
+  GNU General Public License Version 2, June 1991
