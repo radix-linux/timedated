@@ -53,66 +53,156 @@ G_DEFINE_TYPE_WITH_PRIVATE (RclDaemon, rcl_daemon, RCL_TYPE_TIMEDATE_DAEMON_SKEL
 
 
 /***************************************************************
-  Polkit functions:
-  ================
+  Polkit data and functions:
+  =========================
  */
-static gboolean
-_check_polkit_for_action( RclDaemon             *object,
-                          GDBusMethodInvocation *invocation,
-                          const gchar           *function )
+struct check_polkit_data
 {
-  const gchar               *action = g_strjoin( "", RCL_INTERFACE_PREFIX, function, NULL );
-  const gchar               *sender;
-  GError                    *error;
-  PolkitSubject             *subject;
+  const gchar         *unique_name;
+  const gchar         *action_id;
+  gboolean             user_interaction;
+  GAsyncReadyCallback  callback;
+  gpointer             user_data;
+
+  PolkitAuthority     *authority;
+  PolkitSubject       *subject;
+};
+
+static void
+check_polkit_data_free( struct check_polkit_data *data )
+{
+  if( data == NULL )
+    return;
+
+  if( data->action_id != NULL )
+    g_free( (gpointer)data->action_id );
+
+  if( data->subject != NULL )
+    g_object_unref( data->subject );
+  if( data->authority != NULL )
+    g_object_unref( data->authority );
+
+  g_free( data );
+}
+
+static gboolean
+check_polkit_finish( GAsyncResult  *result,
+                     GError       **error  )
+{
+  g_return_val_if_fail( g_task_is_valid( result, NULL ), FALSE );
+
+  return g_task_propagate_boolean( G_TASK( result ), error );
+}
+
+static void
+_check_polkit_for_action_async( GDBusMethodInvocation *invocation,
+                                const gchar           *function,
+                                const gboolean         interactive,
+                                GAsyncReadyCallback    callback,
+                                gpointer               user_data );
+
+
+static void
+_check_polkit_authorization_callback( GObject      *source_object,
+                                      GAsyncResult *res,
+                                      gpointer     _data)
+{
+  struct check_polkit_data  *data;
   PolkitAuthorizationResult *result;
+  GTask                     *task;
+  GError                    *error = NULL;
 
-  error = NULL;
-
-  /* Check that caller is privileged */
-  sender = g_dbus_method_invocation_get_sender( invocation );
-  subject = polkit_system_bus_name_new( sender );
-
-  /********************************************************************************************
-    flag = POLKIT_CHECK_AUTHORIZATION_FLAGS_ALLOW_USER_INTERACTION causes a pop-up dialog box.
-    We have not to use any pop-up windows.
-   */
-  result = polkit_authority_check_authorization_sync( object->priv->auth,
-                                                      subject,
-                                                      action,
-                                                      NULL,
-                                                      POLKIT_CHECK_AUTHORIZATION_FLAGS_NONE,
-                                                      NULL,
-                                                      &error );
-  g_object_unref( G_OBJECT(subject) );
-
-  if( error )
+  data = (struct check_polkit_data *)_data;
+  if( (result = polkit_authority_check_authorization_finish( data->authority, res, &error)) == NULL )
   {
-    g_dbus_method_invocation_return_gerror( invocation, error );
-    g_error_free( error );
-    g_free( (gpointer)action );
-
-    return FALSE;
+    g_task_report_error( NULL, data->callback, data->user_data, NULL, error );
+    goto out;
   }
-
+ 
   if( !polkit_authorization_result_get_is_authorized( result ) )
   {
-    error = g_error_new( RCL_DAEMON_ERROR,
-                         RCL_DAEMON_ERROR_NOT_PRIVILEGED,
-                         "User is not privileged for action %s", action );
-    g_dbus_method_invocation_return_gerror( invocation, error );
+    g_task_report_new_error( NULL,
+                             data->callback,
+                             data->user_data,
+                             NULL,
+                             POLKIT_ERROR,
+                             POLKIT_ERROR_NOT_AUTHORIZED,
+                             "Authorization for '%s': user is not authorized", data->action_id );
+    goto out;
+  }
+  task = g_task_new( NULL, NULL, data->callback, data->user_data );
+  g_task_set_source_tag( task, _check_polkit_for_action_async );
+  g_task_return_boolean( task, TRUE );
+  g_clear_object ( &task );
 
-    g_error_free( error );
-    g_object_unref( G_OBJECT(result) );
-    g_free( (gpointer)action );
+out:
+  check_polkit_data_free( data );
+  if( result != NULL )
+    g_object_unref( result );
+}
 
-    return FALSE;
+static void
+_check_polkit_authority_callback( GObject      *source_object,
+                                  GAsyncResult *result,
+                                  gpointer     _data )
+{
+  struct check_polkit_data *data;
+  GError                   *error = NULL;
+
+  data = (struct check_polkit_data *)_data;
+
+  if( (data->authority = polkit_authority_get_finish( result, &error )) == NULL)
+  {
+    g_task_report_error( NULL, data->callback, data->user_data, NULL, error );
+    check_polkit_data_free( data );
+    return;
+  }
+  if( data->unique_name == NULL ||
+      data->action_id == NULL   ||
+      (data->subject = polkit_system_bus_name_new( data->unique_name )) == NULL )
+  {
+    g_task_report_new_error( NULL,
+                             data->callback,
+                             data->user_data,
+                             NULL,
+                             POLKIT_ERROR,
+                             POLKIT_ERROR_FAILED,
+                             "Authorization for '%s': failed", data->action_id );
+    check_polkit_data_free( data );
+    return;
   }
 
-  g_object_unref( G_OBJECT(result) );
-  g_free( (gpointer)action );
+  polkit_authority_check_authorization( data->authority,
+                                        data->subject,
+                                        data->action_id,
+                                        NULL,
+                                        (PolkitCheckAuthorizationFlags)data->user_interaction,
+                                        NULL,
+                                        _check_polkit_authorization_callback,
+                                        data );
+}
 
-  return TRUE;
+static void
+_check_polkit_for_action_async( GDBusMethodInvocation *invocation,
+                                const gchar           *function,
+                                const gboolean         interactive,
+                                GAsyncReadyCallback    callback,
+                                gpointer               user_data )
+{
+  const gchar               *action = g_strjoin( "", RCL_INTERFACE_PREFIX, function, NULL );
+  struct check_polkit_data  *data;
+  const gchar               *sender;
+
+  sender  = g_dbus_method_invocation_get_sender( invocation );
+
+  data = g_new0( struct check_polkit_data, 1 );
+  data->unique_name      = sender;
+  data->action_id        = action;
+  data->user_interaction = interactive;
+  data->callback         = callback;
+  data->user_data        = user_data;
+
+  polkit_authority_get_async( NULL, _check_polkit_authority_callback, data );
 }
 
 
@@ -179,13 +269,103 @@ void rcl_daemon_sync_dbus_properties( RclTimedateDaemon *object )
   DBus Handlers:
   =============
  */
+
+/*******************************
+  SetTimezone:
+  -----------
+ */
+struct set_timezone_data
+{
+  RclTimedateDaemon     *object;
+  GDBusMethodInvocation *invocation;
+  const gchar           *timezone;
+  gboolean               interactive;
+  RclDaemon             *daemon;
+};
+
+static void
+set_timezone_data_free( struct set_timezone_data * data )
+{
+  if( data == NULL )
+    return;
+
+  if( data->timezone != NULL )
+    g_free( (gpointer)data->timezone );
+
+  g_free( data );
+}
+
+
+static void
+set_timezone_authorized_callback( GObject      *source_object,
+                                  GAsyncResult *result,
+                                  gpointer      user_data )
+{
+  GError                   *error = NULL;
+  struct set_timezone_data *data  = (struct set_timezone_data *)user_data;
+  gboolean                  ret   = TRUE;
+
+  if( !check_polkit_finish( result, &error ) )
+  {
+    g_debug( "set-timezone: error: '%s'", "User is not privileged" );
+    set_timezone_data_free( data );
+    return;
+  }
+
+  ret = set_system_timezone( data->timezone );
+  if( ret )
+  {
+    if( data->daemon->priv->local_rtc )
+    {
+      struct timespec ts;
+      struct tm       tm;
+
+      /* Sync RTC from system clock, with the new delta */
+      if( clock_gettime(CLOCK_REALTIME, &ts) != 0 )
+      {
+        g_debug( "set-timezone: error: Sync RTC from system clock: '%s'", "clock_gettime(): failed" );
+        set_timezone_data_free( data );
+        return;
+      }
+      if( !localtime_r( &ts.tv_sec, &tm ) )
+      {
+        g_debug( "set-timezone: error: Sync RTC from system clock: '%s'", "localtime_r(): failed" );
+        set_timezone_data_free( data );
+        return;
+      }
+      if( !clock_set_hwclock( &tm ) )
+      {
+        g_debug( "set-timezone: error: Sync RTC from system clock: '%s'", "Cannot update '/dev/rtc' (ignoring)" );
+      }
+    }
+  }
+  else
+  {
+    g_debug( "set-timezone: error: Cannot set system timezone '%s'", data->timezone );
+    set_timezone_data_free( data );
+    return;
+  }
+
+  g_free( (gpointer)data->daemon->priv->timezone );
+  data->daemon->priv->timezone  = g_strdup( data->timezone );
+  rcl_timedate_daemon_set_timezone( data->object, (const gchar *)data->daemon->priv->timezone );
+
+
+  g_debug( "set-timezone: SetTimezone to '%s' returns successful status (interactive=%s)",
+                                          data->daemon->priv->timezone, (data->interactive) ? "true" : "false" );
+
+  rcl_timedate_daemon_complete_set_timezone( data->object, data->invocation );
+
+  set_timezone_data_free( data );
+}
+
 gboolean handle_set_timezone( RclTimedateDaemon     *object,
                               GDBusMethodInvocation *invocation,
                               const gchar           *timezone,
                               gboolean               interactive,
                               RclDaemon             *daemon )
 {
-  gboolean ret = TRUE;
+  struct set_timezone_data *data;
 
   if( !timezone_is_valid( timezone ) )
   {
@@ -199,89 +379,77 @@ gboolean handle_set_timezone( RclTimedateDaemon     *object,
   if( g_strcmp0( (const char *)daemon->priv->timezone, (const char *)timezone ) == 0 )
     goto out;
 
-  if( !_check_polkit_for_action( daemon, invocation, "set-timezone" ) )
-  {
-    g_debug( "set-timezone: error: '%s'", "User is not privileged" );
-    return TRUE;
-  }
+  data = g_new0( struct set_timezone_data, 1 );
+  data->object         = object;
+  data->invocation     = invocation;
+  data->timezone       = (const gchar *)g_strdup( timezone );
+  data->interactive    = interactive;
+  data->daemon         = daemon;
 
-  ret = set_system_timezone( timezone );
-  if( ret )
-  {
-    if( daemon->priv->local_rtc )
-    {
-      struct timespec ts;
-      struct tm       tm;
-
-      /* Sync RTC from system clock, with the new delta */
-      if( clock_gettime(CLOCK_REALTIME, &ts) != 0 )
-      {
-        g_debug( "set-timezone: error: Sync RTC from system clock: '%s'", "clock_gettime(): failed" );
-        return TRUE;
-      }
-      if( !localtime_r( &ts.tv_sec, &tm ) )
-      {
-        g_debug( "set-timezone: error: Sync RTC from system clock: '%s'", "localtime_r(): failed" );
-        return TRUE;
-      }
-      if( !clock_set_hwclock( &tm ) )
-      {
-        g_debug( "set-timezone: error: Sync RTC from system clock: '%s'", "Cannot update '/dev/rtc' (ignoring)" );
-      }
-    }
-  }
-  else
-  {
-    g_debug( "set-timezone: error: Cannot set system timezone '%s'", timezone );
-    return TRUE;
-  }
-
-  g_free( (gpointer)daemon->priv->timezone );
-  daemon->priv->timezone  = g_strdup( timezone );
-  rcl_timedate_daemon_set_timezone( object, (const gchar *)daemon->priv->timezone );
-
+  _check_polkit_for_action_async( invocation,
+                                  "set-timezone",
+                                  interactive,
+                                  set_timezone_authorized_callback,
+                                  data );
 out:
-  g_debug( "set-timezone: SetTimezone to '%s' returns successful status (interactive=%s)",
-                                          daemon->priv->timezone, (interactive) ? "true" : "false" );
-
-  rcl_timedate_daemon_complete_set_timezone( object, invocation );
-
   return TRUE;
 }
 
 
-gboolean handle_set_local_rtc( RclTimedateDaemon     *object,
-                               GDBusMethodInvocation *invocation,
-                               gboolean               local_rtc,
-                               gboolean               fix_system,
-                               gboolean               interactive,
-                               RclDaemon             *daemon )
+/*******************************
+  SetLocalRTC:
+  -----------
+ */
+struct set_local_rtc_data
 {
-  struct timespec  ts;
-  gboolean         ret = TRUE;
+  RclTimedateDaemon     *object;
+  GDBusMethodInvocation *invocation;
+  gboolean               local_rtc;
+  gboolean               fix_system;
+  gboolean               interactive;
+  RclDaemon             *daemon;
+};
 
-  if( daemon->priv->local_rtc == local_rtc && !fix_system )
-    goto out;
+static void
+set_local_rtc_data_free( struct set_local_rtc_data * data )
+{
+  if( data == NULL )
+    return;
 
-  if( !_check_polkit_for_action( daemon, invocation, "set-local-rtc" ) )
+  g_free( data );
+}
+
+static void
+set_local_rtc_authorized_callback( GObject      *source_object,
+                                   GAsyncResult *result,
+                                   gpointer      user_data )
+{
+  GError                    *error = NULL;
+  struct set_local_rtc_data *data  = (struct set_local_rtc_data *)user_data;
+  gboolean                   ret = TRUE;
+  struct timespec            ts;
+
+  if( !check_polkit_finish( result, &error ) )
   {
     g_debug( "set-local-rtc: error: '%s'", "User is not privileged" );
-    return TRUE;
+    set_local_rtc_data_free( data );
+    return;
   }
 
-  if( daemon->priv->local_rtc != local_rtc )
+  if( data->daemon->priv->local_rtc != data->local_rtc )
   {
-    daemon->priv->local_rtc = local_rtc;
+    data->daemon->priv->local_rtc = data->local_rtc;
 
     /* Write new configuration files */
-    ret = write_data_local_rtc( daemon->priv->local_rtc );
+    ret = write_data_local_rtc( data->daemon->priv->local_rtc );
     if( !ret )
     {
-      g_dbus_method_invocation_return_error( invocation,
+      g_dbus_method_invocation_return_error( data->invocation,
                                              RCL_DAEMON_ERROR,
                                              RCL_DAEMON_ERROR_GENERAL,
                                              "Cannot set LocalRTC" );
-      return TRUE;
+      set_local_rtc_data_free( data );
+      return;
     }
 
   }
@@ -291,22 +459,24 @@ gboolean handle_set_local_rtc( RclTimedateDaemon     *object,
   if( !ret )
   {
     g_debug( "set-local-rtc: error: Cannot set timezone clock after SetLocal_RTC" );
-    return TRUE;
+    set_local_rtc_data_free( data );
+    return;
   }
 
   /* Synchronize clocks */
   if( clock_gettime(CLOCK_REALTIME, &ts) != 0 )
   {
     g_debug( "set-local-rtc: error: Sync RTC from system clock after SetLocalRTC: '%s'", "clock_gettime(): failed" );
-    return TRUE;
+    set_local_rtc_data_free( data );
+    return;
   }
 
-  if( fix_system )
+  if( data->fix_system )
   {
     struct tm tm;
 
     /* Sync system clock from RTC; first, initialize the timezone fields of struct tm. */
-    localtime_or_gmtime_r( &ts.tv_sec, &tm, !daemon->priv->local_rtc);
+    localtime_or_gmtime_r( &ts.tv_sec, &tm, !data->daemon->priv->local_rtc);
 
     /* Override the main fields of struct tm, but not the timezone fields */
     ret = clock_get_hwclock( &tm );
@@ -317,7 +487,7 @@ gboolean handle_set_local_rtc( RclTimedateDaemon     *object,
     else
     {
       /* And set the system clock with this */
-      ts.tv_sec = mktime_or_timegm( &tm, !daemon->priv->local_rtc );
+      ts.tv_sec = mktime_or_timegm( &tm, !data->daemon->priv->local_rtc );
 
       if( clock_settime( CLOCK_REALTIME, &ts ) < 0 )
       {
@@ -330,7 +500,7 @@ gboolean handle_set_local_rtc( RclTimedateDaemon     *object,
     struct tm tm;
 
     /* Sync RTC from system clock */
-    localtime_or_gmtime_r( &ts.tv_sec, &tm, !daemon->priv->local_rtc );
+    localtime_or_gmtime_r( &ts.tv_sec, &tm, !data->daemon->priv->local_rtc );
 
     ret = clock_set_hwclock( &tm );
     if( !ret )
@@ -339,60 +509,99 @@ gboolean handle_set_local_rtc( RclTimedateDaemon     *object,
     }
   }
 
-  g_debug( "set-local-rtc: RTC configured to %s time", (daemon->priv->local_rtc) ? "localtime" : "UTC" );
+  g_debug( "set-local-rtc: RTC configured to %s time", (data->daemon->priv->local_rtc) ? "localtime" : "UTC" );
 
 
-  rcl_timedate_daemon_set_local_rtc( object, daemon->priv->local_rtc );
+  rcl_timedate_daemon_set_local_rtc( data->object, data->daemon->priv->local_rtc );
 
-out:
   g_debug( "set-local-rtc: SetLocalRTC to '%s' returns successful status (fix_sysrem=%s; interactive=%s)",
-                                           (daemon->priv->local_rtc) ? "localtime" : "UTC",
-                                           (fix_system)              ? "true"      : "false",
-                                           (interactive)             ? "true"      : "false" );
+                                           (data->daemon->priv->local_rtc) ? "localtime" : "UTC",
+                                           (data->fix_system)              ? "true"      : "false",
+                                           (data->interactive)             ? "true"      : "false" );
 
-  rcl_timedate_daemon_complete_set_local_rtc( object, invocation );
+  rcl_timedate_daemon_complete_set_local_rtc( data->object, data->invocation );
 
+  set_local_rtc_data_free( data );
+}
+
+gboolean handle_set_local_rtc( RclTimedateDaemon     *object,
+                               GDBusMethodInvocation *invocation,
+                               gboolean               local_rtc,
+                               gboolean               fix_system,
+                               gboolean               interactive,
+                               RclDaemon             *daemon )
+{
+  struct set_local_rtc_data *data;
+
+  if( daemon->priv->local_rtc == local_rtc && !fix_system )
+    goto out;
+
+  data = g_new0( struct set_local_rtc_data, 1 );
+  data->object      = object;
+  data->invocation  = invocation;
+  data->local_rtc   = local_rtc;
+  data->fix_system  = fix_system;
+  data->interactive = interactive;
+  data->daemon      = daemon;
+
+  _check_polkit_for_action_async( invocation,
+                                  "set-local-rtc",
+                                  interactive,
+                                  set_local_rtc_authorized_callback,
+                                  data );
+out:
   return TRUE;
 }
 
 
-gboolean handle_set_ntp( RclTimedateDaemon     *object,
-                         GDBusMethodInvocation *invocation,
-                         gboolean               use_ntp,
-                         gboolean               interactive,
-                         RclDaemon             *daemon )
+/*******************************
+  SetNTP:
+  ------
+ */
+struct set_ntp_data
 {
-  /* check CanNTP (in case NTPD was uninstalled while timedated running) */
-  if( !ntp_daemon_installed() )
-  {
-    daemon->priv->can_ntp = FALSE;
-    rcl_timedate_daemon_set_can_ntp( object, daemon->priv->can_ntp );
-  }
+  RclTimedateDaemon     *object;
+  GDBusMethodInvocation *invocation;
+  gboolean               use_ntp;
+  gboolean               interactive;
+  RclDaemon             *daemon;
+};
 
-  if( !daemon->priv->can_ntp )
-  {
-    daemon->priv->use_ntp = FALSE;
-    rcl_timedate_daemon_set_ntp( object, daemon->priv->use_ntp );
-    return TRUE;
-  }
+static void
+set_ntp_data_free( struct set_ntp_data * data )
+{
+  if( data == NULL )
+    return;
 
-  if( !_check_polkit_for_action( daemon, invocation, "set-ntp" ) )
+  g_free( data );
+}
+
+static void
+set_ntp_authorized_callback( GObject      *source_object,
+                             GAsyncResult *result,
+                             gpointer      user_data )
+{
+  GError              *error = NULL;
+  struct set_ntp_data *data  = (struct set_ntp_data *)user_data;
+
+  if( !check_polkit_finish( result, &error ) )
   {
     g_debug( "set-ntp: error: '%s'", "User is not privileged" );
-    return TRUE;
+    set_ntp_data_free( data );
+    return;
   }
 
-  if( daemon->priv->use_ntp == use_ntp )
+  if( data->daemon->priv->use_ntp == data->use_ntp )
     goto out;
 
-  if( use_ntp ) /* enable and start NTP daemon: */
+  if( data->use_ntp ) /* enable and start NTP daemon: */
   {
     if( ntp_daemon_enabled() )
     {
       if( ntp_daemon_status() )
       {
         g_debug( "set-ntp: The NTP Daemon already running" );
-        daemon->priv->use_ntp = TRUE;
+        data->daemon->priv->use_ntp = TRUE;
         /* SUCCESS */
       }
       else
@@ -400,18 +609,19 @@ gboolean handle_set_ntp( RclTimedateDaemon     *object,
         if( !start_ntp_daemon() )
         {
           g_debug( "set-ntp: error: Cannot start NTPD daemon" );
-          g_dbus_method_invocation_return_error( invocation,
+          g_dbus_method_invocation_return_error( data->invocation,
                                                  RCL_DAEMON_ERROR,
                                                  RCL_DAEMON_ERROR_GENERAL,
                                                  "Cannot start NTP Daemon" );
-          daemon->priv->use_ntp = FALSE;
+          data->daemon->priv->use_ntp = FALSE;
           /* FAILURE */
-          return TRUE;
+          set_ntp_data_free( data );
+          return;
         }
         else
         {
           g_debug( "set-ntp: The NTPD daemon started successful" );
-          daemon->priv->use_ntp = TRUE;
+          data->daemon->priv->use_ntp = TRUE;
           /* SUCCESS */
         }
       }
@@ -421,31 +631,33 @@ gboolean handle_set_ntp( RclTimedateDaemon     *object,
       if( !enable_ntp_daemon() )
       {
         g_debug( "set-ntp: error: Cannot enable NTPD daemon" );
-        g_dbus_method_invocation_return_error( invocation,
+        g_dbus_method_invocation_return_error( data->invocation,
                                                RCL_DAEMON_ERROR,
                                                RCL_DAEMON_ERROR_GENERAL,
                                                "Cannot enable NTP Daemon" );
-        daemon->priv->use_ntp = FALSE;
+        data->daemon->priv->use_ntp = FALSE;
         /* FAILURE */
-        return TRUE;
+        set_ntp_data_free( data );
+        return;
       }
       else
       {
         if( !start_ntp_daemon() )
         {
           g_debug( "set-ntp: error: Cannot start NTPD daemon" );
-          g_dbus_method_invocation_return_error( invocation,
+          g_dbus_method_invocation_return_error( data->invocation,
                                                  RCL_DAEMON_ERROR,
                                                  RCL_DAEMON_ERROR_GENERAL,
                                                  "Cannot start NTP Daemon" );
-          daemon->priv->use_ntp = FALSE;
+          data->daemon->priv->use_ntp = FALSE;
           /* FAILURE */
-          return TRUE;
+          set_ntp_data_free( data );
+          return;
         }
         else
         {
           g_debug( "set-ntp: The NTPD daemon started successful" );
-          daemon->priv->use_ntp = TRUE;
+          data->daemon->priv->use_ntp = TRUE;
           /* SUCCESS */
         }
       }
@@ -461,13 +673,14 @@ gboolean handle_set_ntp( RclTimedateDaemon     *object,
         if( !stop_ntp_daemon() )
         {
           g_debug( "set-ntp: error: Cannot stop NTPD daemon" );
-          g_dbus_method_invocation_return_error( invocation,
+          g_dbus_method_invocation_return_error( data->invocation,
                                                  RCL_DAEMON_ERROR,
                                                  RCL_DAEMON_ERROR_GENERAL,
                                                  "Cannot stop NTP Daemon" );
-          daemon->priv->use_ntp = TRUE;
+          data->daemon->priv->use_ntp = TRUE;
           /* FAILURE */
-          return TRUE;
+          set_ntp_data_free( data );
+          return;
         }
         else
         {
@@ -475,18 +688,18 @@ gboolean handle_set_ntp( RclTimedateDaemon     *object,
           if( !disable_ntp_daemon() )
           {
             g_debug( "set-ntp: Cannot disable NTPD daemon" );
-            g_dbus_method_invocation_return_error( invocation,
+            g_dbus_method_invocation_return_error( data->invocation,
                                                    RCL_DAEMON_ERROR,
                                                    RCL_DAEMON_ERROR_GENERAL,
                                                    "Cannot disable NTP Daemon" );
-            daemon->priv->use_ntp = FALSE;
+            data->daemon->priv->use_ntp = FALSE;
             /* daemon stopped but not disabled (will start after reboot) */
             /* SUCCESS */
           }
           else
           {
             g_debug( "set-ntp: The NTPD daemon disabled successful" );
-            daemon->priv->use_ntp = FALSE;
+            data->daemon->priv->use_ntp = FALSE;
             /* SUCCESS */
           }
         }
@@ -497,18 +710,18 @@ gboolean handle_set_ntp( RclTimedateDaemon     *object,
         if( !disable_ntp_daemon() )
         {
           g_debug( "set-ntp: error: Cannot disable NTPD daemon" );
-          g_dbus_method_invocation_return_error( invocation,
+          g_dbus_method_invocation_return_error( data->invocation,
                                                  RCL_DAEMON_ERROR,
                                                  RCL_DAEMON_ERROR_GENERAL,
                                                  "Cannot disable NTP Daemon" );
-          daemon->priv->use_ntp = FALSE;
+          data->daemon->priv->use_ntp = FALSE;
           /* daemon stopped but not disabled (will start after reboot) */
           /* SUCCESS */
         }
         else
         {
           g_debug( "set-ntp: The NTPD daemon disabled successful" );
-          daemon->priv->use_ntp = FALSE;
+          data->daemon->priv->use_ntp = FALSE;
           /* SUCCESS */
         }
       }
@@ -516,26 +729,168 @@ gboolean handle_set_ntp( RclTimedateDaemon     *object,
     else
     {
       g_debug( "set-ntp: The NTPD daemon already disabled" );
-      daemon->priv->use_ntp = FALSE;
+      data->daemon->priv->use_ntp = FALSE;
       /* SUCCESS */
     }
   }
 
-  g_debug( "set-ntp: NTP configured to %s", (daemon->priv->use_ntp) ? "enabled" : "disabled" );
+  g_debug( "set-ntp: NTP configured to %s", (data->daemon->priv->use_ntp) ? "enabled" : "disabled" );
 
-  rcl_timedate_daemon_set_ntp( object, daemon->priv->use_ntp );
+  rcl_timedate_daemon_set_ntp( data->object, data->daemon->priv->use_ntp );
   /* rcl_timedate_daemon_set_ntpsynchronized( object, daemon->priv->use_ntp ); */
 
 out:
   g_debug( "set-ntp: SetNTP to '%s' returns successful status (interactive=%s)",
-                                (daemon->priv->use_ntp) ? "true" : "false",
-                                (interactive)           ? "true" : "false" );
+                                (data->daemon->priv->use_ntp) ? "true" : "false",
+                                (data->interactive)           ? "true" : "false" );
 
-  rcl_timedate_daemon_complete_set_ntp( object, invocation );
+  rcl_timedate_daemon_complete_set_ntp( data->object, data->invocation );
 
+  set_ntp_data_free( data );
+}
+
+gboolean handle_set_ntp( RclTimedateDaemon     *object,
+                         GDBusMethodInvocation *invocation,
+                         gboolean               use_ntp,
+                         gboolean               interactive,
+                         RclDaemon             *daemon )
+{
+  struct set_ntp_data *data;
+
+  /* check CanNTP (in case NTPD was uninstalled while timedated running) */
+  if( !ntp_daemon_installed() )
+  {
+    daemon->priv->can_ntp = FALSE;
+    rcl_timedate_daemon_set_can_ntp( object, daemon->priv->can_ntp );
+  }
+
+  if( !daemon->priv->can_ntp )
+  {
+    daemon->priv->use_ntp = FALSE;
+    rcl_timedate_daemon_set_ntp( object, daemon->priv->use_ntp );
+    return TRUE;
+  }
+
+  data = g_new0( struct set_ntp_data, 1 );
+  data->object      = object;
+  data->invocation  = invocation;
+  data->use_ntp     = use_ntp;
+  data->interactive = interactive;
+  data->daemon      = daemon;
+
+  _check_polkit_for_action_async( invocation,
+                                  "set-ntp",
+                                  interactive,
+                                  set_ntp_authorized_callback,
+                                  data );
   return TRUE;
 }
 
+
+/*******************************
+  SetTime:
+  -------
+ */
+struct set_time_data
+{
+  RclTimedateDaemon     *object;
+  GDBusMethodInvocation *invocation;
+  guint64                start;
+  guint64                usec_utc;
+  gboolean               relative;
+  gboolean               interactive;
+  RclDaemon             *daemon;
+};
+
+static void
+set_time_data_free( struct set_time_data * data )
+{
+  if( data == NULL )
+    return;
+
+  g_free( data );
+}
+
+static void
+set_time_authorized_callback( GObject      *source_object,
+                              GAsyncResult *result,
+                              gpointer      user_data )
+{
+  GError               *error = NULL;
+  struct set_time_data *data  = (struct set_time_data *)user_data;
+  struct timespec       ts;
+  struct tm             tm;
+
+  if( !check_polkit_finish( result, &error ) )
+  {
+    g_debug( "set-local-rtc: error: '%s'", "User is not privileged" );
+    set_time_data_free( data );
+    return;
+  }
+
+  if( data->relative )
+  {
+    guint64  n, x;
+
+    n = now( CLOCK_REALTIME );
+    x = n + data->usec_utc;
+
+    if( (data->usec_utc > 0 && x < n) ||
+        (data->usec_utc < 0 && x > n)   )
+    {
+      g_debug( "set-time: error: Time value overflow" );
+      g_dbus_method_invocation_return_error( data->invocation,
+                                             RCL_DAEMON_ERROR,
+                                             RCL_DAEMON_ERROR_INVALID_ARGS,
+                                             "set-time: Time value overflow" );
+      set_time_data_free( data );
+      return;
+    }
+    timespec_store( &ts, x );
+  }
+  else
+  {
+    timespec_store( &ts, (guint64)data->usec_utc);
+  }
+
+  timespec_store( &ts, timespec_load( &ts ) + (now( CLOCK_MONOTONIC ) - data->start) );
+
+  /* Set system clock */
+  if( clock_settime( CLOCK_REALTIME, &ts ) < 0 )
+  {
+    g_debug( "set-time: error: Failed to set local time" );
+    g_dbus_method_invocation_return_error( data->invocation,
+                                           RCL_DAEMON_ERROR,
+                                           RCL_DAEMON_ERROR_GENERAL,
+                                           "set-time: Failed to set local time" );
+    set_time_data_free( data );
+    return;
+  }
+
+  /* Sync down to RTC */
+  localtime_or_gmtime_r( &ts.tv_sec, &tm, !data->daemon->priv->local_rtc );
+
+  if( !clock_set_hwclock( &tm ) )
+  {
+    g_debug( "set-time: error: Failed to update hardware clock (ignoring)" );
+  }
+
+  g_debug( "set-time: SetTime method returns successful status" );
+
+  /* Update RTCTimeUSec (by the way) */
+  (void)get_rtctime_usec( data->object );
+
+  rcl_timedate_daemon_set_time_usec( data->object, timespec_load( &ts ) );
+
+  g_debug( "set-time: SetTime to %" PRIu64 " returns successful status(relative=%s; interactive=%s)",
+                                 data->usec_utc,
+                                 (data->relative)    ? "true" : "false",
+                                 (data->interactive) ? "true" : "false" );
+
+  rcl_timedate_daemon_complete_set_time( data->object, data->invocation );
+
+  set_time_data_free( data );
+}
 
 gboolean handle_set_time( RclTimedateDaemon     *object,
                           GDBusMethodInvocation *invocation,
@@ -544,9 +899,8 @@ gboolean handle_set_time( RclTimedateDaemon     *object,
                           gboolean               interactive,
                           RclDaemon             *daemon )
 {
-  struct timespec  ts;
-  struct tm        tm;
-  guint64          start;
+  struct set_time_data *data;
+  guint64               start;
 
   if( ntp_daemon_installed() && ntp_daemon_enabled() && ntp_daemon_status() )
   {
@@ -577,76 +931,30 @@ gboolean handle_set_time( RclTimedateDaemon     *object,
     goto out;
   }
 
-  if( relative )
-  {
-    guint64  n, x;
+  data = g_new0( struct set_time_data, 1 );
+  data->object      = object;
+  data->invocation  = invocation;
+  data->start       = start;
+  data->usec_utc    = usec_utc;
+  data->relative    = relative;
+  data->interactive = interactive;
+  data->daemon      = daemon;
 
-    n = now( CLOCK_REALTIME );
-    x = n + usec_utc;
-
-    if( (usec_utc > 0 && x < n) ||
-        (usec_utc < 0 && x > n)   )
-    {
-      g_debug( "set-time: error: Time value overflow" );
-      g_dbus_method_invocation_return_error( invocation,
-                                             RCL_DAEMON_ERROR,
-                                             RCL_DAEMON_ERROR_INVALID_ARGS,
-                                             "set-time: Time value overflow" );
-      return TRUE;
-    }
-    timespec_store( &ts, x );
-  }
-  else
-  {
-    timespec_store( &ts, (guint64)usec_utc);
-  }
-
-  if( !_check_polkit_for_action( daemon, invocation, "set-time" ) )
-  {
-    g_debug( "set-time: error: '%s'", "User is not privileged" );
-    return TRUE;
-  }
-
-  timespec_store( &ts, timespec_load( &ts ) + (now( CLOCK_MONOTONIC ) - start) );
-
-  /* Set system clock */
-  if( clock_settime( CLOCK_REALTIME, &ts ) < 0 )
-  {
-    g_debug( "set-time: error: Failed to set local time" );
-    g_dbus_method_invocation_return_error( invocation,
-                                           RCL_DAEMON_ERROR,
-                                           RCL_DAEMON_ERROR_GENERAL,
-                                           "set-time: Failed to set local time" );
-    return TRUE;
-  }
-
-  /* Sync down to RTC */
-  localtime_or_gmtime_r( &ts.tv_sec, &tm, !daemon->priv->local_rtc );
-
-  if( !clock_set_hwclock( &tm ) )
-  {
-    g_debug( "set-time: error: Failed to update hardware clock (ignoring)" );
-  }
-
-  g_debug( "set-time: SetTime method returns successful status" );
-
-  /* Update RTCTimeUSec (by the way) */
-  (void)get_rtctime_usec( object );
-
-  rcl_timedate_daemon_set_time_usec( object, timespec_load( &ts ) );
+  _check_polkit_for_action_async( invocation,
+                                  "set-time",
+                                  interactive,
+                                  set_time_authorized_callback,
+                                  data );
 
 out:
-  g_debug( "set-time: SetTime to %" PRIu64 " returns successful status(relative=%s; interactive=%s)",
-                                 usec_utc,
-                                 (relative)    ? "true" : "false",
-                                 (interactive) ? "true" : "false" );
-
-  rcl_timedate_daemon_complete_set_time( object, invocation );
-
   return TRUE;
 }
 
 
+/*******************************
+  ListTimezones:
+  -------------
+ */
 gboolean handle_list_timezones( RclTimedateDaemon     *object,
                                 GDBusMethodInvocation *invocation,
                                 RclDaemon             *daemon )
@@ -673,7 +981,6 @@ gboolean handle_list_timezones( RclTimedateDaemon     *object,
 
   return TRUE;
 }
-
 
 
 /***************************************************************
